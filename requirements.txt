@@ -1,0 +1,5 @@
+gradio>=5.0,<6
+sqlalchemy==2.0.35
+openai==1.55.0
+python-dotenv==1.0.1
+audioop-lts>=0.2    # Python 3.13 兼容性（pydub 依赖）

@@ -209,6 +209,17 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# Claude Code
+.claude/
+
+# Misc
+.mimocode-project-id
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
@@ -216,3 +227,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ── 项目特定 ──
+data/*.db
+data/*.log
+start.bat
