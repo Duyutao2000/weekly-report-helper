@@ -63,7 +63,7 @@ def _default_total_hours():
 
 # ═══════════════════════════ CSS & JS ═══════════════════════════
 TREE_CSS = """<style>
-.tree { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
+.tree { font-family: 'Times New Roman', Times, 'Songti SC', 'Noto Serif SC', serif; font-size: 14px; }
 .tree details { margin: 2px 0; }
 .tree details > summary { list-style: none; cursor: pointer; padding: 6px 8px; border-radius: 4px; user-select: none; display: flex; align-items: center; gap: 4px; }
 .tree details > summary:hover { background: #f0f0f0; }
@@ -324,7 +324,10 @@ def build_app():
     head_html = f"<style>#js_cmd_box,#js_trigger{{position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none}}</style><script>{TREE_JS}</script>"
 
     with gr.Blocks(title="个人周报助手", theme=gr.themes.Soft(), head=head_html,
-                   css=".warning-box{background:#fff3cd;border:1px solid #ffc107;color:#856404;padding:8px 12px;border-radius:4px;margin:8px 0}") as app:
+                   css="""
+                   * { font-family: 'Times New Roman', Times, 'Songti SC', 'Noto Serif SC', serif !important; }
+                   .warning-box{background:#fff3cd;border:1px solid #ffc107;color:#856404;padding:8px 12px;border-radius:4px;margin:8px 0}
+                   """) as app:
 
         ws_state = gr.State(dws)
         we_state = gr.State(dwe)
