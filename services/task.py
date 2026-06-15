@@ -182,6 +182,7 @@ def create_task(
     hours: float | None,
     week_start: date,
     week_end: date,
+    parent_id: int | None = None,
 ) -> Task:
     """
     新增任务。
@@ -192,6 +193,7 @@ def create_task(
         hours: 工时（可为 None，表示待填写）
         week_start: 周开始日期
         week_end: 周结束日期
+        parent_id: 父任务 ID（可选，支持嵌套）
 
     返回:
         新创建的 Task 对象
@@ -217,6 +219,7 @@ def create_task(
         status="pending",
         week_start=week_start,
         week_end=week_end,
+        parent_id=parent_id,
     )
     session.add(task)
     session.commit()
@@ -326,6 +329,18 @@ def undo_complete_task(session: Session, task_id: int) -> Task:
     return task
 
 
+def _cascade_soft_delete(session: Session, task: Task):
+    """递归软删除所有子任务"""
+    children = session.query(Task).filter(
+        Task.parent_id == task.id,
+        Task.is_deleted == False,
+    ).all()
+    for child in children:
+        _cascade_soft_delete(session, child)
+        child.is_deleted = True
+        child.updated_at = datetime.now()
+
+
 def delete_task(session: Session, task_id: int) -> Task:
     """
     软删除任务。
@@ -342,6 +357,9 @@ def delete_task(session: Session, task_id: int) -> Task:
     task = get_task(session, task_id)
     if not task:
         raise ValueError("任务不存在")
+
+    # 级联软删除所有子任务
+    _cascade_soft_delete(session, task)
 
     task.is_deleted = True
     task.updated_at = datetime.now()

@@ -55,6 +55,7 @@ class Task(Base):
         String(20), nullable=False, default="pending",
         comment="任务状态：pending / completed"
     )
+    parent_id = Column(Integer, ForeignKey("tasks.id"), nullable=True, comment="父任务 ID（NULL = 顶层任务）")
     week_start = Column(Date, nullable=False, comment="所属周开始日期")
     week_end = Column(Date, nullable=False, comment="所属周结束日期")
     is_deleted = Column(Boolean, nullable=False, default=False, comment="软删除标记")
@@ -64,6 +65,7 @@ class Task(Base):
 
     # 关联
     project = relationship("Project", back_populates="tasks")
+    parent = relationship("Task", remote_side="Task.id", backref="children")
 
     def __repr__(self):
         return f"<Task(id={self.id}, project_id={self.project_id}, status='{self.status}')>"
