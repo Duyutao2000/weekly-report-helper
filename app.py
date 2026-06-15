@@ -226,14 +226,16 @@ def _render_current_week_tree(ws, we):
     finally:
         s.close()
 
-    # 按项目分组
+    # 按项目分组，只统计叶子任务工时（避免父子重复计算）
     proj_map = {}
     for t in all_tasks:
         pid = t.project_id
         if pid not in proj_map:
             proj_map[pid] = {"project": t.project, "tasks": [], "total_hours": 0.0}
         proj_map[pid]["tasks"].append(t)
-        if t.hours:
+        # 只统计叶子任务（无未删除子任务）的工时
+        active_children = [c for c in (t.children or []) if not c.is_deleted]
+        if not active_children and t.hours:
             proj_map[pid]["total_hours"] += t.hours
 
     if not proj_map:

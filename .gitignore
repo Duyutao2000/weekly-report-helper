@@ -216,6 +216,7 @@ tempCodeRunnerFile.py
 
 # Claude Code
 .claude/
+CLAUDE.md
 
 # Misc
 .mimocode-project-id

@@ -173,6 +173,104 @@ def get_all_tasks(
 
 
 # ──────────────────────────────────────────────
+# 工时汇总工具
+# ──────────────────────────────────────────────
+def _is_leaf(session: Session, task: Task) -> bool:
+    """判断任务是否为叶子节点（无未删除的子任务）"""
+    count = session.query(Task).filter(
+        Task.parent_id == task.id,
+        Task.is_deleted == False,
+    ).count()
+    return count == 0
+
+
+def _get_direct_children_hours(session: Session, task_id: int) -> float:
+    """
+    计算某任务的所有未删除直接子任务的工时总和。
+
+    如果子任务本身也是父节点，其 hours 字段应为已汇总值，
+    因此 Sum(children.hours) 自然包含了所有后代。
+    """
+    children = session.query(Task).filter(
+        Task.parent_id == task_id,
+        Task.is_deleted == False,
+    ).all()
+    return sum((c.hours or 0.0) for c in children)
+
+
+def _recalculate_from_parent(session: Session, parent_id: int):
+    """
+    从指定父节点开始，沿父链向上逐层重算工时。
+
+    与 recalculate_ancestor_hours 的区别：
+    该函数直接接受 parent_id，不依赖被删除的任务。
+    """
+    current_id = parent_id
+    while current_id:
+        parent = session.query(Task).filter(
+            Task.id == current_id, Task.is_deleted == False,
+        ).first()
+        if not parent:
+            break
+        parent.hours = round(_get_direct_children_hours(session, parent.id), 1)
+        parent.updated_at = datetime.now()
+        current_id = parent.parent_id
+    session.commit()
+
+
+def recalculate_ancestor_hours(session: Session, task_id: int):
+    """
+    沿父链向上，将每个祖先任务的工时更新为其直接子节点工时之和。
+
+    用于任何任务的工时变更后联动更新。
+
+    参数:
+        session: 数据库会话
+        task_id: 发生变更的任务 ID
+    """
+    task = session.query(Task).filter(
+        Task.id == task_id, Task.is_deleted == False,
+    ).first()
+    if not task or not task.parent_id:
+        return
+
+    current_id = task.parent_id
+    while current_id:
+        parent = session.query(Task).filter(
+            Task.id == current_id, Task.is_deleted == False,
+        ).first()
+        if not parent:
+            break
+        parent.hours = round(_get_direct_children_hours(session, parent.id), 1)
+        parent.updated_at = datetime.now()
+        current_id = parent.parent_id
+    session.commit()
+
+
+def get_leaf_hours_total(session: Session, week_start: date, week_end: date) -> float:
+    """
+    计算当周所有叶子任务的工时总和（避免父子重复计算）。
+
+    参数:
+        week_start: 周开始日期
+        week_end: 周结束日期
+
+    返回:
+        总工时（float，保留一位小数）
+    """
+    all_tasks = session.query(Task).filter(
+        Task.week_start == week_start,
+        Task.week_end == week_end,
+        Task.is_deleted == False,
+    ).all()
+    total = sum(
+        (t.hours or 0.0) for t in all_tasks
+        if _is_leaf(session, t)
+    )
+    return round(total, 1)
+
+
+# ──────────────────────────────────────────────
 # 写操作
 # ──────────────────────────────────────────────
 def create_task(
@@ -223,6 +321,11 @@ def create_task(
     )
     session.add(task)
     session.commit()
+
+    # 若为子任务，向上汇总父节点工时
+    if parent_id:
+        recalculate_ancestor_hours(session, task.id)
+
     return task
 
 
@@ -274,6 +377,11 @@ def update_task(
 
     task.updated_at = datetime.now()
     session.commit()
+
+    # 工时变更后，沿父链向上汇总
+    if hours is not None:
+        recalculate_ancestor_hours(session, task_id)
+
     return task
 
 
@@ -358,12 +466,20 @@ def delete_task(session: Session, task_id: int) -> Task:
     if not task:
         raise ValueError("任务不存在")
 
+    # 记录父节点 ID（用于删除后向上汇总）
+    parent_id = task.parent_id
+
     # 级联软删除所有子任务
     _cascade_soft_delete(session, task)
 
     task.is_deleted = True
     task.updated_at = datetime.now()
     session.commit()
+
+    # 删除后向上重算父节点工时（直接对 parent_id 操作，因 task 已软删除）
+    if parent_id:
+        _recalculate_from_parent(session, parent_id)
+
     return task
 
 
@@ -372,7 +488,7 @@ def delete_task(session: Session, task_id: int) -> Task:
 # ──────────────────────────────────────────────
 def get_week_total_hours(session: Session, week_start: date, week_end: date) -> float:
     """
-    计算当周已分配工时总和（含 pending + completed，不含软删除）。
+    计算当周已分配工时总和（仅叶子任务，避免父子重复计算）。
 
     参数:
         week_start: 周开始日期
@@ -381,14 +497,4 @@ def get_week_total_hours(session: Session, week_start: date, week_end: date) -> 
     返回:
         总工时（float，保留一位小数）
     """
-    tasks = (
-        session.query(Task)
-        .filter(
-            Task.week_start == week_start,
-            Task.week_end == week_end,
-            Task.is_deleted == False,
-        )
-        .all()
-    )
-    total = sum(t.hours or 0.0 for t in tasks)
-    return round(total, 1)
+    return get_leaf_hours_total(session, week_start, week_end)
