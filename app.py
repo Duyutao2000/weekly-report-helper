@@ -80,7 +80,9 @@ TREE_CSS = """<style>
 .tree .task-actions button, .tree details > summary .task-actions button { background: none; border: 1px solid #ddd; border-radius: 3px; cursor: pointer; font-size: 12px; padding: 1px 6px; }
 .tree .task-actions button:hover, .tree details > summary .task-actions button:hover { background: #e8e8e8; }
 .tree .plan-badge { font-size: 10px; color: #888; margin-left: 4px; }
-.tree input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: #4caf50; }
+.tree input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; appearance: none; -webkit-appearance: none; border: 2px solid #888; border-radius: 3px; background: #fff; position: relative; flex-shrink: 0; }
+.tree input[type=checkbox]:checked { border-color: #333; background: #fff; }
+.tree input[type=checkbox]:checked::after { content: ''; position: absolute; left: 3px; top: 0px; width: 5px; height: 10px; border: solid #000; border-width: 0 2px 2px 0; transform: rotate(45deg); }
 .tree .edit-input { font-size: 13px; padding: 2px 4px; border: 1px solid #4caf50; border-radius: 3px; width: 120px; }
 .tree .edit-input-hours { width: 50px; }
 .tree .add-form { margin: 4px 0 4px 32px; display: flex; gap: 6px; align-items: center; }
