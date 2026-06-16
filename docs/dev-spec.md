@@ -278,7 +278,7 @@ delay = min(max_delay, base × 2^attempt) × random(0, 1)
 | llm_model | qwen-plus | 大模型标识 |
 | llm_base_url | https://dashscope.aliyuncs.com/compatible-mode/v1 | API 地址 |
 
-**自定义周工时**：用户修改仅影响当前周的显示值（内存中），不写入 `settings` 表。`settings.total_hours_per_week` 是全局默认，切换周期时以此为初始值。
+**自定义周工时**：用户通过任务看板"应用"按钮修改后，**写入 `settings.total_hours_per_week` 持久化**，重启后仍保留。切换周期时自动重置为该默认值。
 
 ### 3.6 ER 关系图
 
@@ -452,7 +452,8 @@ delay = min(max_delay, base × 2^attempt) × random(0, 1)
 ```
 weekly-report-helper/
 ├── app.py                  # Gradio 主界面 + 页面路由
-├── models.py               # SQLAlchemy 数据模型
+├── core/
+│   └── models.py           # SQLAlchemy 数据模型
 ├── services/
 │   ├── project.py          # 项目 CRUD
 │   ├── task.py             # 任务 CRUD + 工时计算
@@ -713,7 +714,7 @@ def with_retry(func, *args, **kwargs):
 
 | 阶段 | 内容 | 预估工时 | 产出 |
 |------|------|----------|------|
-| P1 | 项目初始化 + 数据模型 + 数据库初始化 | 2h | `models.py`, `data/` 自动建表 |
+| P1 | 项目初始化 + 数据模型 + 数据库初始化 | 2h | `core/models.py`, `data/` 自动建表 |
 | P2 | 项目 CRUD | 1.5h | `services/project.py` |
 | P3 | 任务 CRUD + 状态流转 + 软删除 | 3h | `services/task.py`, `validators.py` |
 | P4 | 工时计算 + 超时提示 | 1h | 实时剩余计算 |

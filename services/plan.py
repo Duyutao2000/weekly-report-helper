@@ -8,7 +8,7 @@
 
 from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
-from models import NextWeekPlan, Task, Project
+from core.models import NextWeekPlan, Task, Project
 
 
 # ──────────────────────────────────────────────

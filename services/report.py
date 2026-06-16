@@ -14,7 +14,7 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-from models import Report
+from core.models import Report
 from services.task import get_completed_tasks_by_week
 from services.llm import generate_report
 

@@ -90,7 +90,8 @@ python app.py
 ```
 weekly-report-helper/
 ├── app.py                    # Gradio 主界面
-├── models.py                 # SQLAlchemy 数据模型
+├── core/
+│   └── models.py             # SQLAlchemy 数据模型 + DB 初始化
 ├── requirements.txt          # Python 依赖
 ├── .env.example              # 环境变量模板
 ├── start.bat                 # Windows 快速启动脚本

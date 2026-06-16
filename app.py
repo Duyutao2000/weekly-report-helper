@@ -9,7 +9,7 @@ from pathlib import Path
 import gradio as gr
 from sqlalchemy.orm import joinedload
 
-from models import init_db, get_session, Project, Task, NextWeekPlan, Setting
+from core.models import init_db, get_session, Project, Task, NextWeekPlan, Setting
 from services.project import list_projects, create_project, update_project, delete_project
 from services.task import (
     create_task, update_task, complete_task, undo_complete_task,
@@ -358,7 +358,8 @@ def build_app():
             warning_md = gr.Markdown("")
 
             with gr.Row():
-                custom_h_num = gr.Number(label="自定义总工时（留空=默认40h）", value=None, precision=1, minimum=0, step=0.5, scale=3)
+                _saved_default_h = _default_total_hours()
+                custom_h_num = gr.Number(label=f"自定义总工时（留空=已保存默认 {_saved_default_h}h）", value=None, precision=1, minimum=0, step=0.5, scale=3)
                 apply_h_btn = gr.Button("应用", scale=1, variant="secondary")
 
             with gr.Accordion("➕ 新增任务", open=False):
@@ -466,7 +467,20 @@ def build_app():
             inputs=[ws_tb, we_tb, plan_ws_tb, plan_we_tb], outputs=[ws_state, we_state, pws_state, pwe_state],
         ).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT)
 
-        apply_h_btn.click(lambda v: v if v and v > 0 else None, inputs=[custom_h_num], outputs=[custom_h_state]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT)
+        def handle_apply_custom_hours(hours):
+            """应用自定义工时：写入 DB 持久化 + 更新内存 state，重启后仍生效。
+            传入 None 或 0 时不写 DB，仅清空内存覆盖（回退到 DB 默认值）。"""
+            if hours and hours > 0:
+                s = _s()
+                try:
+                    r = s.query(Setting).filter(Setting.key == "total_hours_per_week").first()
+                    if r: r.value = str(hours); r.updated_at = datetime.now()
+                    else: s.add(Setting(key="total_hours_per_week", value=str(hours)))
+                    s.commit()
+                finally: s.close()
+                return hours
+            return None
+        apply_h_btn.click(handle_apply_custom_hours, inputs=[custom_h_num], outputs=[custom_h_state]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT)
 
         def handle_apply_plan_week(pws_s, pwe_s):
             pws = _parse(pws_s); pwe = _parse(pwe_s)
@@ -647,7 +661,7 @@ def build_app():
                 else: s.add(Setting(key="total_hours_per_week", value=str(hours)))
                 s.commit(); return f"✅ 已保存：默认 {hours}h/周"
             finally: s.close()
-        save_set_btn.click(handle_save_settings, inputs=[default_h_num], outputs=[set_msg])
+        save_set_btn.click(handle_save_settings, inputs=[default_h_num], outputs=[set_msg]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT)
 
         app.load(lambda: refresh_proj_ui(), outputs=[proj_table_html, rename_proj_dd, del_proj_dd])
         app.load(lambda: refresh_tree(dws, dwe, dpws, dpwe, None, "current"), outputs=TREE_OUT)

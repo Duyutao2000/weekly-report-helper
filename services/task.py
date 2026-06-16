@@ -9,7 +9,7 @@ from datetime import datetime, date
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from sqlalchemy.orm import joinedload
-from models import Task, Project
+from core.models import Task, Project
 
 
 # ──────────────────────────────────────────────
