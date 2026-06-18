@@ -79,8 +79,9 @@ def _call_api(prompt: str, system_prompt: str = "") -> str:
     response = client.chat.completions.create(
         model=LLM_MODEL,
         messages=messages,
-        temperature=0.3,  # 低温度，偏向确定性输出
+        temperature=0.3,  # 低温度，偏向确定性输出（非思考模式下生效）
         max_tokens=2048,
+        extra_body={"thinking": {"type": "disabled"}},  # 显式关闭思考模式，避免浪费 token
     )
 
     content = response.choices[0].message.content or ""

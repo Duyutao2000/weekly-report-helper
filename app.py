@@ -62,23 +62,11 @@ def _default_total_hours():
 
 
 def _make_report_msg_html(success: bool, count: int, is_plan: bool = False) -> str:
-    """生成周报状态消息 HTML（含复制按钮 + toast 提示）"""
+    """生成周报状态消息 HTML"""
     if not success:
         return ""
     label = f"计划已生成（{count} 条）" if is_plan else f"周报已生成（{count} 个任务）"
-    return f"""
-<div style="display:flex;align-items:center;gap:10px;margin:8px 0">
-  <span>✅ {label}</span>
-  <button onclick="copyWeeklyReport()"
-          style="cursor:pointer;padding:3px 10px;border:1px solid #888;border-radius:4px;
-                 background:#fff;font-size:12px;color:#333;white-space:nowrap">
-    📋 复制
-  </button>
-  <span id="copy-toast" style="display:none;background:#323232;color:#fff;padding:4px 10px;
-                              border-radius:4px;font-size:12px;white-space:nowrap">
-    ✅ 已复制到剪贴板
-  </span>
-</div>"""
+    return f'<span style="color:#2e7d32">✅ {label}</span>'
 
 
 
@@ -175,6 +163,44 @@ function submitAddSubtask(parentType, parentId) {
 }
 """
 
+# 全局 head HTML（js_cmd/trigger 隐藏 + 树 JS）
+COPY_JS = """
+var copyTries = 0;
+var copyIv = setInterval(function() {
+    var btn = document.getElementById('copy-report-btn');
+    if (btn) {
+        clearInterval(copyIv);
+        btn.addEventListener('click', function() {
+            var ta = document.querySelector('#report-content textarea');
+            if (!ta) return;
+            var text = ta.value || '';
+            var toast = document.getElementById('copy-toast');
+            var show = function() {
+                if (toast) { toast.style.display = 'inline'; clearTimeout(toast._tid);
+                    toast._tid = setTimeout(function() { toast.style.display = 'none'; }, 2000); }
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(show).catch(function() {
+                    ta.select(); ta.setSelectionRange(0, 99999);
+                    document.execCommand('copy'); show();
+                });
+            } else {
+                ta.select(); ta.setSelectionRange(0, 99999);
+                document.execCommand('copy'); show();
+            }
+        });
+    }
+    if (++copyTries > 100) clearInterval(copyIv);
+}, 200);
+"""
+
+HEAD_HTML = f"""<style>#js_cmd_box,#js_trigger{{position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none}}</style>
+<script>{TREE_JS}</script>
+<script>{COPY_JS}</script>"""
+HEAD_CSS = """
+* { font-family: 'Times New Roman', Times, 'Songti SC', 'Noto Serif SC', serif !important; }
+.warning-box{background:#fff3cd;border:1px solid #ffc107;color:#856404;padding:8px 12px;border-radius:4px;margin:8px 0}
+"""
 
 # ═══════════════════════════ 树渲染 ═══════════════════════════
 def _render_task_node(task, indent=12):
@@ -347,13 +373,8 @@ def _render_plan_tree(pws, pwe):
 def build_app():
     dws, dwe = _default_week()
     dpws, dpwe = get_default_next_week()
-    head_html = f"<style>#js_cmd_box,#js_trigger{{position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none}}</style><script>{TREE_JS}</script>"
 
-    with gr.Blocks(title="个人周报助手", theme=gr.themes.Soft(), head=head_html,
-                   css="""
-                   * { font-family: 'Times New Roman', Times, 'Songti SC', 'Noto Serif SC', serif !important; }
-                   .warning-box{background:#fff3cd;border:1px solid #ffc107;color:#856404;padding:8px 12px;border-radius:4px;margin:8px 0}
-                   """) as app:
+    with gr.Blocks(title="个人周报助手", theme=gr.themes.Soft(), head=HEAD_HTML, css=HEAD_CSS) as app:
 
         ws_state = gr.State(dws)
         we_state = gr.State(dwe)
@@ -406,37 +427,25 @@ def build_app():
             js_cmd = gr.Textbox(visible=True, elem_id="js_cmd_box")
             js_trigger = gr.Button(".", visible=True, elem_id="js_trigger")
 
-            # 复制周报按钮的全局 JS
-            gr.HTML("""
-            <script>
-            function copyWeeklyReport() {
-                const ta = document.querySelector('#report-content textarea, #report-content input');
-                if (!ta) return;
-                navigator.clipboard.writeText(ta.value).then(function() {
-                    var toast = document.getElementById('copy-toast');
-                    if (toast) {
-                        toast.style.display = 'inline';
-                        setTimeout(function() { toast.style.display = 'none'; }, 2000);
-                    }
-                }).catch(function() {
-                    // 降级方案：传统 execCommand
-                    ta.select();
-                    document.execCommand('copy');
-                    var toast = document.getElementById('copy-toast');
-                    if (toast) {
-                        toast.style.display = 'inline';
-                        setTimeout(function() { toast.style.display = 'none'; }, 2000);
-                    }
-                });
-            }
-            </script>
-            """)
-
             gr.Markdown("---")
             gr.Markdown("### 📝 生成周报")
             report_btn = gr.Button("🤖 生成周报", variant="primary")
             report_out = gr.Textbox(label="周报内容", lines=10, max_lines=25, interactive=False, elem_id="report-content")
             report_msg = gr.HTML("")
+            # 复制按钮 — 永久显示在周报内容右下方
+            gr.HTML("""
+            <div style="text-align:right;margin-top:-8px;margin-bottom:12px">
+              <button id="copy-report-btn"
+                      style="cursor:pointer;padding:3px 12px;border:1px solid #888;border-radius:4px;
+                             background:#fff;font-size:12px;color:#333">
+                📋 复制周报
+              </button>
+              <span id="copy-toast" style="display:none;background:#323232;color:#fff;padding:4px 10px;
+                                        border-radius:4px;font-size:12px;margin-left:8px">
+                ✅ 已复制到剪贴板
+              </span>
+            </div>
+            """)
 
         # ═══════════════ Tab 2: 历史任务 ═══════════════
         with gr.TabItem("📋 历史任务"):
