@@ -61,6 +61,28 @@ def _default_total_hours():
     finally: s.close()
 
 
+def _make_report_msg_html(success: bool, count: int, is_plan: bool = False) -> str:
+    """生成周报状态消息 HTML（含复制按钮 + toast 提示）"""
+    if not success:
+        return ""
+    label = f"计划已生成（{count} 条）" if is_plan else f"周报已生成（{count} 个任务）"
+    return f"""
+<div style="display:flex;align-items:center;gap:10px;margin:8px 0">
+  <span>✅ {label}</span>
+  <button onclick="copyWeeklyReport()"
+          style="cursor:pointer;padding:3px 10px;border:1px solid #888;border-radius:4px;
+                 background:#fff;font-size:12px;color:#333;white-space:nowrap">
+    📋 复制
+  </button>
+  <span id="copy-toast" style="display:none;background:#323232;color:#fff;padding:4px 10px;
+                              border-radius:4px;font-size:12px;white-space:nowrap">
+    ✅ 已复制到剪贴板
+  </span>
+</div>"""
+
+
+
+
 # ═══════════════════════════ CSS & JS ═══════════════════════════
 TREE_CSS = """<style>
 .tree { font-family: 'Times New Roman', Times, 'Songti SC', 'Noto Serif SC', serif; font-size: 14px; }
@@ -384,11 +406,37 @@ def build_app():
             js_cmd = gr.Textbox(visible=True, elem_id="js_cmd_box")
             js_trigger = gr.Button(".", visible=True, elem_id="js_trigger")
 
+            # 复制周报按钮的全局 JS
+            gr.HTML("""
+            <script>
+            function copyWeeklyReport() {
+                const ta = document.querySelector('#report-content textarea, #report-content input');
+                if (!ta) return;
+                navigator.clipboard.writeText(ta.value).then(function() {
+                    var toast = document.getElementById('copy-toast');
+                    if (toast) {
+                        toast.style.display = 'inline';
+                        setTimeout(function() { toast.style.display = 'none'; }, 2000);
+                    }
+                }).catch(function() {
+                    // 降级方案：传统 execCommand
+                    ta.select();
+                    document.execCommand('copy');
+                    var toast = document.getElementById('copy-toast');
+                    if (toast) {
+                        toast.style.display = 'inline';
+                        setTimeout(function() { toast.style.display = 'none'; }, 2000);
+                    }
+                });
+            }
+            </script>
+            """)
+
             gr.Markdown("---")
             gr.Markdown("### 📝 生成周报")
             report_btn = gr.Button("🤖 生成周报", variant="primary")
-            report_out = gr.Textbox(label="周报内容", lines=10, max_lines=25, interactive=False)
-            report_msg = gr.Markdown("")
+            report_out = gr.Textbox(label="周报内容", lines=10, max_lines=25, interactive=False, elem_id="report-content")
+            report_msg = gr.HTML("")
 
         # ═══════════════ Tab 2: 历史任务 ═══════════════
         with gr.TabItem("📋 历史任务"):
@@ -573,14 +621,14 @@ def build_app():
             try:
                 if active_tab == "plan":
                     plans = get_plans_by_target_week(s, ws_d, we_d)
-                    if not plans: return "", "❌ 下周计划暂无数据"
+                    if not plans: return "", '<span style="color:red">❌ 下周计划暂无数据</span>'
                     result = generate_weekly_plan(s, ws_d, we_d, plans)
-                    return result, f"✅ 计划已生成（{len(plans)} 条）"
+                    return result, _make_report_msg_html(True, len(plans), is_plan=True)
                 else:
                     report = generate_weekly_report(s, ws_d, we_d)
-                    return report.content, f"✅ 周报已生成（{len(json.loads(report.task_ids))} 个任务）"
-            except ValueError as e: return "", f"❌ {e}"
-            except Exception as e: logger.exception("生成失败"); return "", f"❌ 失败: {e}"
+                    return report.content, _make_report_msg_html(True, len(json.loads(report.task_ids)), is_plan=False)
+            except ValueError as e: return "", f'<span style="color:red">❌ {e}</span>'
+            except Exception as e: logger.exception("生成失败"); return "", f'<span style="color:red">❌ 失败: {e}</span>'
             finally: s.close()
         report_btn.click(handle_report, inputs=[ws_state, we_state, tab_state], outputs=[report_out, report_msg])
 

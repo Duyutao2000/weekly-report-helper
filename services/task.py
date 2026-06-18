@@ -96,7 +96,11 @@ def get_completed_tasks_by_week(
             Task.is_deleted == False,
         )
         .join(Project)
-        .order_by(Project.created_at.asc(), Task.completed_at.asc())
+        .order_by(
+            Project.created_at.asc(),
+            Task.parent_id.asc().nullsfirst(),  # 父任务排在子任务前面
+            Task.completed_at.asc(),
+        )
         .all()
     )
 
@@ -182,6 +186,59 @@ def _is_leaf(session: Session, task: Task) -> bool:
         Task.is_deleted == False,
     ).count()
     return count == 0
+
+
+def _all_children_completed(session: Session, parent_id: int) -> bool:
+    """
+    检查父任务的所有未删除子任务是否均已完成。
+
+    没有子任务时返回 False（不应该被调用于此场景）。
+    """
+    pending_count = session.query(Task).filter(
+        Task.parent_id == parent_id,
+        Task.is_deleted == False,
+        Task.status != "completed",
+    ).count()
+    return pending_count == 0
+
+
+def _auto_complete_parents(session: Session, task: Task) -> None:
+    """
+    向上递归：当所有兄弟任务完成时，自动完成父任务。
+
+    从 task 的父节点开始，逐层向上检查。
+    """
+    parent = session.query(Task).filter(Task.id == task.parent_id).first()
+    while parent:
+        if parent.status == "completed":
+            # 父任务已是完成状态，继续向上（可能祖辈也需要更新）
+            parent = session.query(Task).filter(Task.id == parent.parent_id).first()
+            continue
+        if _all_children_completed(session, parent.id):
+            parent.status = "completed"
+            parent.completed_at = datetime.now()
+            parent.updated_at = datetime.now()
+            parent = session.query(Task).filter(Task.id == parent.parent_id).first()
+        else:
+            break  # 不是所有兄弟都完成了，停止向上
+
+
+def _undo_parents_if_auto_completed(session: Session, task: Task) -> None:
+    """
+    向上递归：当子任务撤销完成时，撤销父任务的完成状态。
+
+    仅撤销因自动完成而标记为 completed 的父任务（所有父任务的完成都是自动的，
+    因为父任务无法手动勾选）。
+    """
+    parent = session.query(Task).filter(Task.id == task.parent_id).first()
+    while parent:
+        if parent.status == "completed":
+            parent.status = "pending"
+            parent.completed_at = None
+            parent.updated_at = datetime.now()
+            parent = session.query(Task).filter(Task.id == parent.parent_id).first()
+        else:
+            break
 
 
 def _get_direct_children_hours(session: Session, task_id: int) -> float:
@@ -322,8 +379,15 @@ def create_task(
     session.add(task)
     session.commit()
 
-    # 若为子任务，向上汇总父节点工时
+    # 若为子任务，向上汇总父节点工时 + 撤销已完成父任务
     if parent_id:
+        parent = session.query(Task).filter(Task.id == parent_id).first()
+        if parent and parent.status == "completed":
+            # 父任务已完成 → 新增子任务意味着有新的待办，恢复父为 pending
+            parent.status = "pending"
+            parent.completed_at = None
+            parent.updated_at = datetime.now()
+            session.commit()
         recalculate_ancestor_hours(session, task.id)
 
     return task
@@ -407,6 +471,11 @@ def complete_task(session: Session, task_id: int) -> Task:
     task.status = "completed"
     task.completed_at = datetime.now()
     task.updated_at = datetime.now()
+
+    # 所有子任务完成时，自动完成父任务（递归向上）
+    if task.parent_id:
+        _auto_complete_parents(session, task)
+
     session.commit()
     return task
 
@@ -414,6 +483,8 @@ def complete_task(session: Session, task_id: int) -> Task:
 def undo_complete_task(session: Session, task_id: int) -> Task:
     """
     撤销完成任务，恢复为 pending。
+
+    同时撤销因自动完成而标记为 completed 的父任务（递归向上）。
 
     参数:
         task_id: 任务 ID
@@ -433,6 +504,11 @@ def undo_complete_task(session: Session, task_id: int) -> Task:
     task.status = "pending"
     task.completed_at = None
     task.updated_at = datetime.now()
+
+    # 撤销自动完成的父任务（递归向上）
+    if task.parent_id:
+        _undo_parents_if_auto_completed(session, task)
+
     session.commit()
     return task
 
@@ -479,6 +555,16 @@ def delete_task(session: Session, task_id: int) -> Task:
     # 删除后向上重算父节点工时（直接对 parent_id 操作，因 task 已软删除）
     if parent_id:
         _recalculate_from_parent(session, parent_id)
+        # 若父任务已完成但剩余子任务不全完成 → 撤销父任务
+        parent = session.query(Task).filter(Task.id == parent_id).first()
+        if parent and parent.status == "completed" and not _all_children_completed(session, parent_id):
+            parent.status = "pending"
+            parent.completed_at = None
+            parent.updated_at = datetime.now()
+            session.commit()
+            # 继续向上检查祖辈
+            if parent.parent_id:
+                _undo_parents_if_auto_completed(session, parent)
 
     return task
 

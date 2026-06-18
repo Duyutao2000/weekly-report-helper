@@ -91,12 +91,13 @@ def _call_api(prompt: str, system_prompt: str = "") -> str:
 # ──────────────────────────────────────────────
 # 业务接口
 # ──────────────────────────────────────────────
-def generate_report(tasks_text: str) -> str:
+def generate_report(tasks_text: str, plans_text: str = "") -> str:
     """
     生成周报。
 
     参数:
         tasks_text: 按格式组织的已完成任务文本
+        plans_text: 按格式组织的下周计划文本（可为空）
 
     返回:
         大模型生成的周报内容
@@ -106,7 +107,7 @@ def generate_report(tasks_text: str) -> str:
         RuntimeError: LLM 调用失败
     """
     template = _load_template("report_prompt.txt")
-    prompt = template.replace("{tasks}", tasks_text)
+    prompt = template.replace("{tasks}", tasks_text).replace("{plans}", plans_text)
     return _call_api(prompt, system_prompt="你是一个专业的周报撰写助手，擅长将技术开发任务转化为书面化、成果导向的周报。你始终保留所有技术细节（表名、字段名、技术方案、系统名），只润色语言表达。")
 
 
