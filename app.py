@@ -651,15 +651,18 @@ def build_app():
             finally: s.close()
             if not tasks: return '<div style="color:#888;padding:20px">没有匹配的任务</div>'
             from collections import defaultdict
+            # 仅统计叶子任务工时，避免父子重复计算（父任务 hours = 子任务 hours 之和）
+            parent_ids = {t.parent_id for t in tasks if t.parent_id is not None}
+            def _leaf_hours(ts): return sum(t.hours or 0 for t in ts if t.id not in parent_ids)
             weeks = defaultdict(lambda: defaultdict(list))
             for t in tasks: weeks[f"{t.week_start} ~ {t.week_end}"][t.project.name].append(t)
-            total = sum(t.hours or 0 for t in tasks)
+            total = _leaf_hours(tasks)
             parts = [f'<div style="margin-bottom:8px">共 {len(tasks)} 条，总工时 {total:.1f}h</div>']
             for wk in sorted(weeks.keys(), reverse=True):
-                pgs = weeks[wk]; wh = sum(t.hours or 0 for pp in pgs.values() for t in pp)
+                pgs = weeks[wk]; wh = _leaf_hours([t for pp in pgs.values() for t in pp])
                 wk_parts = []
                 for pname, ptasks in pgs.items():
-                    ph = sum(t.hours or 0 for t in ptasks)
+                    ph = _leaf_hours(ptasks)
                     rows = [f'<tr><td width="24">{"✅" if t.status=="completed" else "⬜"}</td><td>{t.description[:80]}{"…" if len(t.description)>80 else ""}</td><td width="50" align="right">{t.hours if t.hours else "—"}h</td></tr>' for t in ptasks]
                     wk_parts.append(f'<div style="margin-bottom:6px;border:1px solid #e0e0e0;border-radius:4px;overflow:hidden"><div style="background:#f9f9f9;padding:4px 8px;font-size:12px;font-weight:bold">📁 {pname} ({ph:.1f}h)</div><table width="100%" style="font-size:12px">{"".join(rows)}</table></div>')
                 parts.append(f'<div style="margin-bottom:12px"><div style="font-weight:bold;margin-bottom:4px">📅 {wk} ({wh:.1f}h)</div>{"".join(wk_parts)}</div>')
