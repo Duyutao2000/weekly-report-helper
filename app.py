@@ -2,9 +2,15 @@
 个人周报助手 —— Gradio 主界面
 """
 
-import json, logging
+import json, logging, warnings
 from datetime import date, datetime, timedelta
 from pathlib import Path
+
+# 静默 Gradio/Starlette 框架弃用警告
+# Gradio 内部 warn() 使用 stacklevel=2，警告归属到 app.py 自身，module 过滤无效，需用 message 匹配
+from starlette.exceptions import StarletteDeprecationWarning
+warnings.filterwarnings("ignore", category=StarletteDeprecationWarning)
+warnings.filterwarnings("ignore", message=r".*(will be removed in Gradio|422_UNPROCESSABLE).*")
 
 import gradio as gr
 from sqlalchemy.orm import joinedload
@@ -609,20 +615,20 @@ def build_app():
 
         # ── 全局新增任务 ──
         def handle_global_add(proj, name, hours, ws_d, we_d, pws_d, pwe_d, active_tab):
-            if not proj: return "❌ 请选择项目"
-            if not name or not name.strip(): return "❌ 描述不能为空"
+            if not proj: return "❌ 请选择项目", "", None
+            if not name or not name.strip(): return "❌ 描述不能为空", "", None
             pid = _proj_id(proj)
-            if not pid: return "❌ 项目不存在"
+            if not pid: return "❌ 项目不存在", "", None
             try: vh = validate_hours(float(hours)) if hours is not None else None
-            except ValueError as e: return f"❌ {e}"
+            except ValueError as e: return f"❌ {e}", "", None
             s = _s()
             try:
                 if active_tab == "current": create_task(s, pid, name.strip(), vh, ws_d, we_d)
                 else: create_plan(s, pid, name.strip(), pws_d, pwe_d)
-                return "✅ 已添加"
-            except ValueError as e: return f"❌ {e}"
+                return "✅ 已添加", "", None
+            except ValueError as e: return f"❌ {e}", "", None
             finally: s.close()
-        add_btn.click(handle_global_add, inputs=[add_proj_dd, add_name_tb, add_hours_num, ws_state, we_state, pws_state, pwe_state, tab_state], outputs=[add_msg]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT)
+        add_btn.click(handle_global_add, inputs=[add_proj_dd, add_name_tb, add_hours_num, ws_state, we_state, pws_state, pwe_state, tab_state], outputs=[add_msg, add_name_tb, add_hours_num]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT)
 
         # ── 生成周报 ──
         def handle_report(ws_d, we_d, active_tab):
