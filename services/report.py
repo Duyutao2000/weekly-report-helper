@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from core.models import Report
 from datetime import timedelta
 from services.task import get_completed_tasks_by_week
-from services.llm import generate_report
+from services.llm import generate_report, generate_plan
 
 logger = logging.getLogger(__name__)
 

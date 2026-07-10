@@ -631,21 +631,15 @@ def build_app():
         add_btn.click(handle_global_add, inputs=[add_proj_dd, add_name_tb, add_hours_num, ws_state, we_state, pws_state, pwe_state, tab_state], outputs=[add_msg, add_name_tb, add_hours_num]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT)
 
         # ── 生成周报 ──
-        def handle_report(ws_d, we_d, active_tab):
+        def handle_report(ws_d, we_d):
             s = _s()
             try:
-                if active_tab == "plan":
-                    plans = get_plans_by_target_week(s, ws_d, we_d)
-                    if not plans: return "", '<span style="color:red">❌ 下周计划暂无数据</span>'
-                    result = generate_weekly_plan(s, ws_d, we_d, plans)
-                    return result, _make_report_msg_html(True, len(plans), is_plan=True)
-                else:
-                    report = generate_weekly_report(s, ws_d, we_d)
-                    return report.content, _make_report_msg_html(True, len(json.loads(report.task_ids)), is_plan=False)
+                report = generate_weekly_report(s, ws_d, we_d)
+                return report.content, _make_report_msg_html(True, len(json.loads(report.task_ids)), is_plan=False)
             except ValueError as e: return "", f'<span style="color:red">❌ {e}</span>'
             except Exception as e: logger.exception("生成失败"); return "", f'<span style="color:red">❌ 失败: {e}</span>'
             finally: s.close()
-        report_btn.click(handle_report, inputs=[ws_state, we_state, tab_state], outputs=[report_out, report_msg])
+        report_btn.click(handle_report, inputs=[ws_state, we_state], outputs=[report_out, report_msg])
 
         # ── 历史查询 ──
         def handle_history(ws_s, we_s, proj, status, kw):

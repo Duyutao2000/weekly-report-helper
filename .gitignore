@@ -229,6 +229,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Workbuddy
+.workbuddy/
+
 # ── 项目特定 ──
 data/*.db
 data/*.log
