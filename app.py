@@ -97,8 +97,8 @@ TREE_CSS = """<style>
 .tree .task-actions button:hover, .tree details > summary .task-actions button:hover { background: #e8e8e8; }
 .tree .plan-badge { font-size: 10px; color: #888; margin-left: 4px; }
 .tree input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; appearance: none; -webkit-appearance: none; border: 2px solid #888; border-radius: 3px; background: #fff; position: relative; flex-shrink: 0; }
-.tree input[type=checkbox]:checked { border-color: #333; background: #fff; }
-.tree input[type=checkbox]:checked::after { content: ''; position: absolute; left: 3px; top: 0px; width: 5px; height: 10px; border: solid #000; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.tree input[type=checkbox]:checked { border-color: #2e7d32; background: #2e7d32; }
+.tree input[type=checkbox]:checked::after { content: ''; position: absolute; left: 3px; top: 0px; width: 5px; height: 10px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
 .tree .edit-input { font-size: 13px; padding: 2px 4px; border: 1px solid #4caf50; border-radius: 3px; width: 120px; }
 .tree .edit-input-hours { width: 50px; }
 .tree .add-form { margin: 4px 0 4px 32px; display: flex; gap: 6px; align-items: center; }
@@ -200,12 +200,70 @@ var copyIv = setInterval(function() {
 }, 200);
 """
 
+HIST_JS = """
+function histToggleTask(taskId, checked) {
+    sendCmd('toggle_' + (checked ? 'complete' : 'undo'), {task_id: taskId});
+    setTimeout(function() {
+        var sb = document.getElementById('hist-search-btn');
+        if (sb) sb.click();
+    }, 300);
+}
+function histEditTask(id) {
+    var span = document.getElementById('hname_task_' + id);
+    if (!span) return;
+    var current = span.getAttribute('data-full') || span.textContent.trim();
+    var input = document.createElement('input');
+    input.type = 'text'; input.value = current;
+    input.className = 'edit-input';
+    input.style.width = '160px';
+    span.replaceWith(input); input.focus(); input.select();
+    var save = function() {
+        var newVal = input.value.trim();
+        if (newVal && newVal !== current) {
+            sendCmd('edit_name', {type: 'task', id: id, value: newVal});
+            // 更新显示的文本和 data-full
+            var ns = document.createElement('span');
+            ns.id = 'hname_task_' + id;
+            var escNew = newVal.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            ns.setAttribute('data-full', escNew);
+            ns.textContent = newVal.length > 80 ? newVal.slice(0, 80) + '…' : newVal;
+            ns.style.cursor = 'text';
+            ns.ondblclick = function(){ histEditTask(id); };
+            input.replaceWith(ns);
+            setTimeout(function() {
+                var sb = document.getElementById('hist-search-btn');
+                if (sb) sb.click();
+            }, 300);
+        } else {
+            var ns = document.createElement('span');
+            ns.id = 'hname_task_' + id;
+            ns.textContent = current;
+            ns.setAttribute('data-full', current);
+            ns.className = span.className;
+            input.replaceWith(ns);
+        }
+    };
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); save(); }
+    });
+}
+"""
+
 HEAD_HTML = f"""<style>#js_cmd_box,#js_trigger{{position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none}}</style>
 <script>{TREE_JS}</script>
-<script>{COPY_JS}</script>"""
+<script>{COPY_JS}</script>
+<script>{HIST_JS}</script>"""
 HEAD_CSS = """
 * { font-family: 'Times New Roman', Times, 'Songti SC', 'Noto Serif SC', serif !important; }
 .warning-box{background:#fff3cd;border:1px solid #ffc107;color:#856404;padding:8px 12px;border-radius:4px;margin:8px 0}
+/* 通用 checkbox 勾选样式（兼顾历史页面） */
+input.hist-cb { width:15px; height:15px; cursor:pointer; appearance:none; -webkit-appearance:none; border:2px solid #888; border-radius:3px; background:#fff; position:relative; vertical-align:middle; flex-shrink:0; }
+input.hist-cb:checked { border-color:#2e7d32; background:#2e7d32; }
+input.hist-cb:checked::after { content:''; position:absolute; left:3px; top:0px; width:5px; height:10px; border:solid #fff; border-width:0 2px 2px 0; transform:rotate(45deg); }
+/* export-md-box 隐藏但保留在 DOM 中 */
+#export-md-box { position:fixed; left:-9999px; top:-9999px; width:1px; height:1px; opacity:0; pointer-events:none; }
+#export-md-box textarea { width:1px; height:1px; }
 """
 
 # ═══════════════════════════ 树渲染 ═══════════════════════════
@@ -461,8 +519,11 @@ def build_app():
                 h_proj_dd = gr.Dropdown(label="项目", choices=[""] + _proj_choices(), scale=2)
                 h_status_dd = gr.Dropdown(label="状态", choices=["全部", "pending", "completed"], value="全部", scale=1)
                 h_kw_tb = gr.Textbox(label="关键词", scale=2)
-                h_search_btn = gr.Button("查询", scale=1, variant="primary")
+                h_search_btn = gr.Button("🔍 查询", scale=1, variant="primary", elem_id="hist-search-btn")
+                export_btn = gr.Button("📋 导出 Markdown", scale=1, variant="secondary", elem_id="hist-export-btn")
             hist_html = gr.HTML("")
+            export_md_box = gr.Textbox(visible=True, elem_id="export-md-box", container=False)
+            export_toast = gr.HTML("")
 
         # ═══════════════ Tab 3: 设置 ═══════════════
         with gr.TabItem("⚙ 设置"):
@@ -663,11 +724,104 @@ def build_app():
                 wk_parts = []
                 for pname, ptasks in pgs.items():
                     ph = _leaf_hours(ptasks)
-                    rows = [f'<tr><td width="24">{"✅" if t.status=="completed" else "⬜"}</td><td>{t.description[:80]}{"…" if len(t.description)>80 else ""}</td><td width="50" align="right">{t.hours if t.hours else "—"}h</td></tr>' for t in ptasks]
+                    rows = []
+                    for t in ptasks:
+                        tid = t.id
+                        checked = 'checked' if t.status == 'completed' else ''
+                        desc_raw = t.description
+                        desc_escaped = desc_raw.replace("'", "\\'").replace('"', "&quot;")
+                        desc_display = desc_escaped[:80] + ("…" if len(desc_raw) > 80 else "")
+                        hours_str = f"{t.hours}h" if t.hours else "—"
+                        rows.append(
+                            f'<tr>'
+                            f'<td width="24"><input type="checkbox" class="hist-cb" {checked} '
+                            f'onchange="histToggleTask({tid}, this.checked)"></td>'
+                            f'<td><span id="hname_task_{tid}" data-full="{desc_escaped}" '
+                            f'style="cursor:text" ondblclick="histEditTask({tid})">{desc_display}</span></td>'
+                            f'<td width="50" align="right">{hours_str}</td>'
+                            f'<td width="28"><button onclick="histEditTask({tid})" '
+                            f'style="background:none;border:none;cursor:pointer;font-size:13px;padding:0 4px" '
+                            f'title="编辑描述">✏</button></td>'
+                            f'</tr>'
+                        )
                     wk_parts.append(f'<div style="margin-bottom:6px;border:1px solid #e0e0e0;border-radius:4px;overflow:hidden"><div style="background:#f9f9f9;padding:4px 8px;font-size:12px;font-weight:bold">📁 {pname} ({ph:.1f}h)</div><table width="100%" style="font-size:12px">{"".join(rows)}</table></div>')
                 parts.append(f'<div style="margin-bottom:12px"><div style="font-weight:bold;margin-bottom:4px">📅 {wk} ({wh:.1f}h)</div>{"".join(wk_parts)}</div>')
             return "".join(parts)
         h_search_btn.click(handle_history, inputs=[h_ws_tb, h_we_tb, h_proj_dd, h_status_dd, h_kw_tb], outputs=[hist_html])
+
+        # ── 导出 Markdown ──
+        def _build_md_tree(lines, task, children_map, depth):
+            """递归渲染任务节点为 Markdown 列表项（父任务粗体，子任务缩进）"""
+            prefix = "  " * depth
+            hours_str = f" ({task.hours}h)" if task.hours else ""
+            desc = task.description.replace("[", "\\[").replace("]", "\\]")
+            has_kids = task.id in children_map
+            body = f"**{desc}**" if has_kids else desc
+            lines.append(f"{prefix}- {body}{hours_str}")
+            for child in sorted(children_map.get(task.id, []), key=lambda c: c.created_at or datetime.min):
+                _build_md_tree(lines, child, children_map, depth + 1)
+
+        def handle_export(ws_s, we_s, proj, status, kw):
+            """按当前查询条件导出 Markdown（父子结构保留）"""
+            ws = _parse(ws_s) if ws_s else None; we = _parse(we_s) if we_s else None
+            pid = _proj_id(proj) if proj else None; sv = status if status != "全部" else None
+            kwv = kw.strip() if kw and kw.strip() else None
+            s = _s()
+            try:
+                tasks = get_all_tasks(s, ws, we, pid, sv, kwv)
+            finally:
+                s.close()
+            if not tasks:
+                return "", '<span style="color:red">❌ 没有匹配的任务可导出</span>'
+
+            from collections import defaultdict
+            # 按周分组（倒序）
+            weeks = defaultdict(list)
+            for t in tasks:
+                weeks[f"{t.week_start} ~ {t.week_end}"].append(t)
+
+            lines = []
+            for wk in sorted(weeks.keys(), reverse=True):
+                lines.append(f"# 📅 {wk}")
+                lines.append("")
+                week_tasks = weeks[wk]
+                # 按项目分组
+                proj_groups = defaultdict(list)
+                for t in week_tasks:
+                    proj_groups[t.project.name].append(t)
+                for pname in sorted(proj_groups.keys()):
+                    lines.append(f"## 📁 {pname}")
+                    lines.append("")
+                    pts = proj_groups[pname]
+                    all_ids = {t.id for t in pts}
+                    # 根节点：parent_id 为 None 或父节点不在当前集合中
+                    roots = [t for t in pts if t.parent_id is None or t.parent_id not in all_ids]
+                    roots.sort(key=lambda t: t.created_at or datetime.min)
+                    # 子节点映射
+                    children_map = defaultdict(list)
+                    for t in pts:
+                        if t.parent_id is not None:
+                            children_map[t.parent_id].append(t)
+                    for root in roots:
+                        _build_md_tree(lines, root, children_map, 0)
+                    lines.append("")
+
+            md_text = "\n".join(lines)
+            # 通过 toast HTML 中的 img onload 自动复制（绕过 Gradio JS 链的参数传递问题）
+            toast_html = (
+                '<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"'
+                ' style="display:none"'
+                ' onload="var ta=document.querySelector(\'#export-md-box textarea\');'
+                'if(ta&&ta.value)navigator.clipboard.writeText(ta.value)">'
+                '<span style="color:#2e7d32">✅ 已复制到剪贴板</span>'
+            )
+            return md_text, toast_html
+
+        export_btn.click(
+            fn=handle_export,
+            inputs=[h_ws_tb, h_we_tb, h_proj_dd, h_status_dd, h_kw_tb],
+            outputs=[export_md_box, export_toast],
+        )
 
         # ── 设置页面 ──
         def refresh_proj_ui():

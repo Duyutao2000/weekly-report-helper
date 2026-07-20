@@ -421,8 +421,12 @@ def update_task(
     task = get_task(session, task_id)
     if not task:
         raise ValueError("任务不存在")
+
+    # 已完成的限制：允许改描述，但禁止改工时/项目
     if task.status == "completed":
-        raise ValueError("已完成的任务不可编辑，请先撤销完成")
+        if hours is not None or project_id is not None:
+            raise ValueError("已完成的任务不可修改工时或项目，请先撤销完成")
+        # description 可以改，继续执行
 
     if project_id is not None:
         project = session.query(Project).filter(Project.id == project_id).first()
