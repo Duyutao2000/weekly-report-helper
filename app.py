@@ -120,6 +120,18 @@ function sendCmd(action, payload) {
         if (trigger.tagName === 'BUTTON') trigger.click();
         else { var b = trigger.querySelector('button'); if (b) b.click(); }
     }, 80);
+    // 延迟检查命令执行结果，出错时弹窗提醒
+    setTimeout(function pollResult(tries) {
+        tries = tries || 0;
+        if (tries > 12) return;
+        var val = inner.value.trim();
+        if (!val) return;
+        try {
+            var v = JSON.parse(val);
+            if (v && v.error) { alert(v.error); inner.value = ''; return; }
+        } catch(e) {}
+        setTimeout(pollResult, 350, (tries || 0) + 1);
+    }, 500);
 }
 function toggleTask(taskId, checked) {
     sendCmd('toggle_' + (checked ? 'complete' : 'undo'), {task_id: taskId});
@@ -142,8 +154,13 @@ function startEdit(type, id, field) {
     span.replaceWith(input); input.focus(); input.select();
     var save = function() {
         var newVal = input.value.trim();
+        // 无论是否发送命令，立即恢复 span 显示旧值
+        var ns = document.createElement('span');
+        ns.id = field + '_' + type + '_' + id;
+        ns.textContent = current;
+        ns.className = span.className;
+        input.replaceWith(ns);
         if (newVal && newVal !== current) sendCmd('edit_' + field, {type: type, id: id, value: newVal});
-        else { var ns = document.createElement('span'); ns.id = field + '_' + type + '_' + id; ns.textContent = current; ns.className = span.className; input.replaceWith(ns); }
     };
     input.addEventListener('blur', save);
     input.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); save(); } });
@@ -667,8 +684,12 @@ def build_app():
                         task = get_task(s, pid)
                         if task:
                             if active_tab == "current": create_task(s, task.project_id, name, vh, ws_d, we_d, parent_id=pid)
+            except ValueError as e:
+                logger.warning(f"JS cmd 校验失败 ({action}): {e}")
+                return json.dumps({"error": str(e)})
             except Exception as e:
-                logger.exception(f"JS cmd failed: {action}")
+                logger.exception(f"JS cmd 失败: {action}")
+                return json.dumps({"error": f"操作失败: {e}"})
             finally: s.close()
             return ""
 
