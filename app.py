@@ -20,7 +20,7 @@ from services.project import list_projects, create_project, update_project, dele
 from services.task import (
     create_task, update_task, complete_task, undo_complete_task,
     delete_task, get_task, get_tasks_by_week, get_completed_tasks_by_week,
-    get_week_total_hours, get_tasks_grouped_by_project, get_all_tasks, validate_hours,
+    get_week_total_hours, get_week_completed_hours, get_tasks_grouped_by_project, get_all_tasks, validate_hours,
 )
 from services.plan import (
     create_plan, update_plan, delete_plan,
@@ -574,10 +574,12 @@ def build_app():
             pc = _proj_choices()
             if active_tab == "current":
                 s = _s()
-                try: allocated = get_week_total_hours(s, ws_d, we_d)
+                try:
+                    allocated = get_week_total_hours(s, ws_d, we_d)
+                    completed = get_week_completed_hours(s, ws_d, we_d)
                 finally: s.close()
                 remaining = round(total_h - allocated, 1)
-                hours_text = f"总工时: **{total_h}h** | 已分配: **{allocated}h** | 剩余: **{remaining}h**"
+                hours_text = f"总工时: **{total_h}h** | 已分配: **{allocated}h** | 已完成: **{completed}h** | 剩余: **{remaining}h**"
                 warning = f'<div class="warning-box">⚠ 已超工时 **{abs(remaining)}h**，超出 {total_h}h</div>' if remaining < 0 else ""
                 tree = _render_current_week_tree(ws_d, we_d)
             else:
@@ -905,7 +907,7 @@ def build_app():
 
 
 def main():
-    build_app().launch(server_name="127.0.0.1", server_port=7860, share=False)
+    build_app().launch(server_name="127.0.0.1", server_port=7860, share=False, inbrowser=True)
 
 
 if __name__ == "__main__":

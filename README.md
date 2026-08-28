@@ -10,6 +10,8 @@
 ## ✨ 功能
 
 - **树形任务看板** — 项目-任务-子任务三级嵌套，可折叠/展开，复选框标记完成，行内编辑名称和工时
+- **工时看板统计** — 顶部实时显示 总工时 / 已分配 / 已完成 / 剩余，超出总工时红色警告；"已完成"口径为已分配工时中状态为 completed 的叶子任务
+- **后台常驻（Windows）** — 双击 `start.bat` 以托盘模式启动：无窗口后台运行，服务就绪自动打开默认浏览器，右下角托盘图标可随时打开页面或退出
 - **项目与任务隔离** — 项目库在设置页统一管理；任务看板中删除操作仅清除当前周任务，不影响项目本身
 - **周期切换** — 自定义周范围，历史任务持久化，切换周期只切换视图不丢数据
 - **下周计划** — 当周填写下周计划，下周自动弹窗提醒同步，免重复录入
@@ -57,7 +59,11 @@ LLM_MODEL=deepseek-chat
 ### 启动
 
 ```bash
+# 控制台模式（服务就绪后自动打开默认浏览器）
 python app.py
+
+# Windows 托盘模式（推荐）：双击 start.bat
+# 无窗口后台常驻 + 托盘图标，退出请在托盘图标右键
 ```
 
 浏览器打开 `http://127.0.0.1:7860`。
@@ -90,11 +96,13 @@ python app.py
 ```
 weekly-report-helper/
 ├── app.py                    # Gradio 主界面
+├── tray.py                   # Windows 托盘模式启动器（pystray 后台常驻）
 ├── core/
 │   └── models.py             # SQLAlchemy 数据模型 + DB 初始化
 ├── requirements.txt          # Python 依赖
 ├── .env.example              # 环境变量模板
-├── start.bat                 # Windows 快速启动脚本
+├── start.bat                 # Windows 快速启动脚本（托盘模式）
+├── docs/                     # 设计与分析文档
 ├── services/
 │   ├── project.py            # 项目 CRUD
 │   ├── task.py               # 任务 CRUD + 状态流转
@@ -116,6 +124,7 @@ weekly-report-helper/
 | 组件 | 选型 | 说明 |
 |------|------|------|
 | Web UI | Gradio 5 | 单页应用，内嵌 HTML/JS 树形组件 |
+| 系统托盘 | pystray | Windows 后台常驻 + 托盘菜单（tray.py） |
 | ORM | SQLAlchemy 2.0 | 五表模型，带关系预加载 |
 | 数据库 | SQLite | 本地单文件，零配置 |
 | LLM SDK | OpenAI | 兼容多厂商（DeepSeek / 千问 / GPT） |

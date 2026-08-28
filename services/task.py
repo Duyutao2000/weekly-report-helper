@@ -588,3 +588,31 @@ def get_week_total_hours(session: Session, week_start: date, week_end: date) -> 
         总工时（float，保留一位小数）
     """
     return get_leaf_hours_total(session, week_start, week_end)
+
+
+def get_week_completed_hours(session: Session, week_start: date, week_end: date) -> float:
+    """
+    计算当周已完成工时总和（已分配工时中状态为 completed 的部分）。
+
+    口径：仅叶子任务且 status == "completed"，避免父子重复计算
+    （父任务被联动置为 completed 时其 hours 等于子任务之和，重复计入会翻倍）。
+
+    参数:
+        week_start: 周开始日期
+        week_end: 周结束日期
+
+    返回:
+        已完成工时（float，保留一位小数）
+    """
+    all_tasks = session.query(Task).filter(
+        Task.week_start == week_start,
+        Task.week_end == week_end,
+        Task.is_deleted == False,
+    ).all()
+    # 存在子任务的 id 集合（无论子任务状态），叶子 = 不在该集合中的任务
+    parent_ids = {t.parent_id for t in all_tasks if t.parent_id}
+    total = sum(
+        (t.hours or 0.0) for t in all_tasks
+        if t.status == "completed" and t.id not in parent_ids
+    )
+    return round(total, 1)

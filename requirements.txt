@@ -3,3 +3,4 @@ sqlalchemy==2.0.35
 openai>=2.0
 python-dotenv==1.0.1
 audioop-lts>=0.2    # Python 3.13 兼容性（pydub 依赖）
+pystray>=0.19       # 托盘模式（tray.py，配合 pythonw 无窗口后台运行）
