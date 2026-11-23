@@ -3,6 +3,7 @@
 """
 
 import json, logging, warnings
+import html as html_lib
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -15,8 +16,13 @@ warnings.filterwarnings("ignore", message=r".*(will be removed in Gradio|422_UNP
 import gradio as gr
 from sqlalchemy.orm import joinedload
 
-from core.models import init_db, get_session, Project, Task, NextWeekPlan, Setting
-from services.project import list_projects, create_project, update_project, delete_project
+from core.models import (
+    init_db, get_session, Project, Task, NextWeekPlan, Setting,
+    GOAL_NOT_STARTED, GOAL_IN_PROGRESS, GOAL_COMPLETED,
+)
+from services.project import (
+    list_projects, create_project, update_project, delete_project, update_project_status,
+)
 from services.task import (
     create_task, update_task, complete_task, undo_complete_task,
     delete_task, get_task, get_tasks_by_week, get_completed_tasks_by_week,
@@ -26,6 +32,11 @@ from services.plan import (
     create_plan, update_plan, delete_plan,
     get_plans_by_target_week, get_plans_grouped_by_project,
     sync_plans_to_tasks, count_unsynced_plans_for_week, get_default_next_week,
+)
+from services.goal import (
+    create_goal, update_goal, get_goal, delete_goal,
+    start_goal, complete_goal, undo_complete_goal,
+    get_goals_grouped_by_project, count_goals_by_status,
 )
 from services.report import generate_weekly_report, generate_weekly_plan
 
@@ -48,10 +59,11 @@ def _parse(s):
     try: return datetime.strptime(s.strip(), "%Y-%m-%d").date()
     except ValueError: return None
 def _fmt(d): return d.strftime("%Y-%m-%d")
-def _proj_choices():
+def _proj_choices(active_only=False):
     s = _s()
-    try: return [p.name for p in list_projects(s)]
+    try: return [p.name for p in list_projects(s, active_only=active_only)]
     finally: s.close()
+def _active_proj_choices(): return _proj_choices(active_only=True)
 def _proj_id(name):
     from services.project import get_project_by_name
     s = _s()
@@ -107,6 +119,34 @@ TREE_CSS = """<style>
 .tree .add-form button:hover { background: #e8e8e8; }
 </style>"""
 
+GOAL_CSS = """<style>
+.goal-board { font-family: 'Times New Roman', Times, 'Songti SC', 'Noto Serif SC', serif; font-size: 14px; }
+.goal-board details { margin: 2px 0; }
+.goal-board details > summary { list-style: none; cursor: pointer; padding: 6px 8px; border-radius: 4px; display: flex; align-items: center; gap: 6px; background: #f8f8f8; font-weight: 600; }
+.goal-board details > summary:hover { background: #ececec; }
+.goal-board details > summary::-webkit-details-marker { display: none; }
+.goal-board .proj-done-tag { font-size: 11px; color: #999; font-weight: 400; }
+.goal-board .goal-count { font-size: 12px; color: #888; font-weight: 400; margin-left: auto; }
+.goal-board .goal-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px 6px 24px; border-radius: 4px; }
+.goal-board .goal-item:hover { background: #f5f5f5; }
+.goal-board .goal-badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; white-space: nowrap; margin-top: 1px; }
+.goal-board .status-not_started { background: #eef0f2; color: #666; }
+.goal-board .status-in_progress { background: #e3f2fd; color: #1565c0; }
+.goal-board .status-completed { background: #e8f5e9; color: #2e7d32; }
+.goal-board .goal-main { flex: 1; min-width: 0; }
+.goal-board .goal-title { font-weight: 500; cursor: text; }
+.goal-board .goal-note { color: #777; font-size: 12px; margin-top: 2px; cursor: text; white-space: pre-wrap; word-break: break-word; }
+.goal-board .goal-note.empty { color: #aaa; }
+.goal-board .goal-meta { color: #999; font-size: 11px; margin-top: 2px; }
+.goal-board .goal-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.1s; margin-left: auto; }
+.goal-board .goal-item:hover .goal-actions { opacity: 1; }
+.goal-board .goal-actions button { background: none; border: 1px solid #ddd; border-radius: 3px; cursor: pointer; font-size: 12px; padding: 1px 6px; white-space: nowrap; }
+.goal-board .goal-actions button:hover { background: #e8e8e8; }
+.goal-board .edit-note { width: 100%; font-size: 13px; padding: 4px 6px; border: 1px solid #4caf50; border-radius: 3px; font-family: inherit; }
+.goal-board .done-group { margin-left: 20px; }
+.goal-board .done-group > summary { background: #fafafa; font-weight: 400; font-size: 13px; color: #666; }
+</style>"""
+
 TREE_JS = """
 function sendCmd(action, payload) {
     var cmdBox = document.getElementById('js_cmd_box');
@@ -116,10 +156,9 @@ function sendCmd(action, payload) {
     if (!inner) { console.error('Textarea not found'); return; }
     inner.value = JSON.stringify({action: action, payload: payload});
     inner.dispatchEvent(new Event('input', { bubbles: true }));
-    setTimeout(function() {
-        if (trigger.tagName === 'BUTTON') trigger.click();
-        else { var b = trigger.querySelector('button'); if (b) b.click(); }
-    }, 80);
+    // 同步触发：不用 setTimeout，避免页面在后台时定时器被浏览器节流导致命令丢失
+    if (trigger.tagName === 'BUTTON') trigger.click();
+    else { var b = trigger.querySelector('button'); if (b) b.click(); }
     // 延迟检查命令执行结果，出错时弹窗提醒
     setTimeout(function pollResult(tries) {
         tries = tries || 0;
@@ -140,7 +179,7 @@ function confirmDelete(type, id, name) {
     var msg = '确定删除 "' + name + '" ？';
     if (type === 'project_tasks') msg += '\\n（仅删除当前周任务，项目本身保留）';
     else if (type === 'project_plans') msg += '\\n（仅删除当前目标周计划，项目本身保留）';
-    else if (type === 'project') msg += ' 将删除该项目及所有任务。';
+    else if (type === 'project') msg += ' 将删除该项目及所有任务、计划和目标。';
     else msg += ' 将删除该任务及其所有子任务。';
     if (confirm(msg)) sendCmd('delete_' + type, {id: id});
 }
@@ -152,7 +191,10 @@ function startEdit(type, id, field) {
     input.type = 'text'; input.value = current;
     input.className = 'edit-input' + (field === 'hours' ? ' edit-input-hours' : '');
     span.replaceWith(input); input.focus(); input.select();
+    var finished = false;
     var save = function() {
+        if (finished) return;
+        finished = true;
         var newVal = input.value.trim();
         // 无论是否发送命令，立即恢复 span 显示旧值
         var ns = document.createElement('span');
@@ -267,10 +309,65 @@ function histEditTask(id) {
 }
 """
 
+GOAL_JS = """
+function goalStart(id) { sendCmd('goal_start', {id: id}); }
+function goalFinish(id) { sendCmd('goal_finish', {id: id}); }
+function goalUndo(id) { sendCmd('goal_undo', {id: id}); }
+function goalDelete(id) {
+    if (confirm('确定删除该目标？删除后不可恢复。')) sendCmd('goal_delete', {id: id});
+}
+function startEditGoalNote(id) {
+    var span = document.getElementById('note_goal_' + id);
+    if (!span) return;
+    var current = span.getAttribute('data-full') || '';
+    var ta = document.createElement('textarea');
+    ta.value = current;
+    ta.className = 'edit-note';
+    ta.rows = 3;
+    ta.placeholder = '记录卡点、依赖、下一步…（Ctrl/⌘+Enter 保存，Esc 取消）';
+    span.replaceWith(ta);
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    var finished = false;
+    var restore = function(text, empty) {
+        var ns = document.createElement('span');
+        ns.id = 'note_goal_' + id;
+        ns.className = 'goal-note' + (empty ? ' empty' : '');
+        ns.setAttribute('data-full', text);
+        ns.setAttribute('title', empty ? '点击添加备注' : '点击编辑备注');
+        ns.setAttribute('onclick', 'startEditGoalNote(' + id + ')');
+        ns.textContent = empty ? '＋备注' : (text.length > 80 ? text.slice(0, 80) + '…' : text);
+        ta.replaceWith(ns);
+    };
+    var save = function() {
+        if (finished) return;
+        finished = true;
+        var newVal = ta.value.trim();
+        restore(newVal, !newVal);
+        if (newVal !== current) sendCmd('goal_note', {id: id, value: newVal});
+    };
+    var cancel = function() {
+        if (finished) return;
+        finished = true;
+        restore(current, !current);
+    };
+    ta.addEventListener('blur', save);
+    ta.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+        else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
+    });
+}
+function setProjectStatus(id, status) {
+    if (status === 'completed' && !confirm('确定把该项目标记为已完成？\\n历史任务、计划和目标都会保留，只是不再出现在新增任务的下拉中。')) return;
+    sendCmd('project_status', {id: id, status: status});
+}
+"""
+
 HEAD_HTML = f"""<style>#js_cmd_box,#js_trigger{{position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none}}</style>
 <script>{TREE_JS}</script>
 <script>{COPY_JS}</script>
-<script>{HIST_JS}</script>"""
+<script>{HIST_JS}</script>
+<script>{GOAL_JS}</script>"""
 HEAD_CSS = """
 * { font-family: 'Times New Roman', Times, 'Songti SC', 'Noto Serif SC', serif !important; }
 .warning-box{background:#fff3cd;border:1px solid #ffc107;color:#856404;padding:8px 12px;border-radius:4px;margin:8px 0}
@@ -450,6 +547,124 @@ def _render_plan_tree(pws, pwe):
     return "".join(parts)
 
 
+# ═══════════════════════════ 目标看板渲染 ═══════════════════════════
+GOAL_BADGES = {
+    GOAL_NOT_STARTED: ("⏳ 未开始", "status-not_started"),
+    GOAL_IN_PROGRESS: ("🔄 进行中", "status-in_progress"),
+    GOAL_COMPLETED: ("✅ 已完成", "status-completed"),
+}
+
+
+def _esc(text) -> str:
+    """HTML 转义（属性值与文本通用）"""
+    return html_lib.escape(str(text or ""), quote=True)
+
+
+def _goal_meta(goal) -> str:
+    """目标的创建/开始/完成时间提示"""
+    if goal.status == GOAL_COMPLETED:
+        started = f"开始 {goal.started_at:%Y-%m-%d} · " if goal.started_at else ""
+        return f"{started}完成 {goal.completed_at:%Y-%m-%d}" if goal.completed_at else started.rstrip(" ·")
+    if goal.status == GOAL_IN_PROGRESS:
+        return f"开始于 {goal.started_at:%Y-%m-%d}" if goal.started_at else ""
+    return f"创建于 {goal.created_at:%Y-%m-%d}" if goal.created_at else ""
+
+
+def _render_goal_row(goal) -> str:
+    """渲染一条目标：状态徽章 + 名称 + 备注 + 操作按钮"""
+    gid = goal.id
+    label, cls = GOAL_BADGES.get(goal.status, (goal.status, ""))
+    title = _esc(goal.title)
+
+    note = (goal.note or "").strip()
+    note_short = note if len(note) <= 80 else note[:80] + "…"
+    note_html = _esc(note_short) if note else "＋备注"
+    note_cls = "goal-note" if note else "goal-note empty"
+    note_title = "点击编辑备注" if note else "点击添加备注"
+
+    if goal.status == GOAL_NOT_STARTED:
+        actions = f'<button onclick="goalStart({gid})" title="标记为进行中">▶ 开始</button>'
+    elif goal.status == GOAL_IN_PROGRESS:
+        actions = f'<button onclick="goalFinish({gid})" title="标记为已完成">■ 结束</button>'
+    else:
+        actions = f'<button onclick="goalUndo({gid})" title="撤销完成，回到进行中">↩ 撤销</button>'
+    actions += (
+        f'<button onclick="startEdit(\'goal\',{gid},\'name\')" title="编辑名称">✏</button>'
+        f'<button onclick="goalDelete({gid})" title="删除目标">🗑</button>'
+    )
+
+    meta = _goal_meta(goal)
+    meta_html = f'<div class="goal-meta">{meta}</div>' if meta else ""
+    return (
+        f'<div class="goal-item" id="row_goal_{gid}">'
+        f'<span class="goal-badge {cls}">{label}</span>'
+        f'<div class="goal-main">'
+        f'<span class="goal-title" id="name_goal_{gid}" title="{title}">{title}</span>'
+        f'<div class="{note_cls}" id="note_goal_{gid}" data-full="{_esc(note)}" '
+        f'title="{note_title}" onclick="startEditGoalNote({gid})">{note_html}</div>'
+        f'{meta_html}'
+        f'</div>'
+        f'<span class="goal-actions">{actions}</span>'
+        f'</div>'
+    )
+
+
+def _render_goal_board():
+    """
+    渲染目标看板。
+
+    返回:
+        (summary_markdown, board_html)
+    """
+    s = _s()
+    try:
+        grouped = get_goals_grouped_by_project(s)
+        counts = count_goals_by_status(s)
+        projects = list_projects(s)
+    finally:
+        s.close()
+
+    total = sum(counts.values())
+    summary = (
+        f'🎯 共 **{total}** 个目标 &nbsp;|&nbsp; '
+        f'🔄 进行中 **{counts.get(GOAL_IN_PROGRESS, 0)}** &nbsp;|&nbsp; '
+        f'⏳ 未开始 **{counts.get(GOAL_NOT_STARTED, 0)}** &nbsp;|&nbsp; '
+        f'✅ 已完成 **{counts.get(GOAL_COMPLETED, 0)}**'
+    )
+    if not grouped:
+        empty = (
+            '<div class="tree goal-board"><div style="color:#888;padding:20px;text-align:center">'
+            '暂无目标，先在上方新增一个吧</div></div>'
+        )
+        return summary, GOAL_CSS + empty
+
+    parts = [GOAL_CSS, '<div class="tree goal-board">']
+    for project in projects:  # 按项目创建时间排序
+        g = grouped.get(project.id)
+        if not g:
+            continue
+        active = [x for x in g["goals"] if x.status != GOAL_COMPLETED]
+        done = [x for x in g["goals"] if x.status == GOAL_COMPLETED]
+        done_tag = ' <span class="proj-done-tag">（项目已完成）</span>' if not project.is_active else ''
+        count_text = f'进行中 {g["in_progress"]} · 已完成 {g["completed"]}'
+
+        parts.append('<details open>')
+        parts.append(
+            f'<summary>📁 {_esc(project.name)}{done_tag}'
+            f'<span class="goal-count">{count_text}</span></summary>'
+        )
+        for goal in active:
+            parts.append(_render_goal_row(goal))
+        if done:
+            parts.append(f'<details class="done-group"><summary>✅ 已完成（{len(done)}）</summary>')
+            for goal in done:
+                parts.append(_render_goal_row(goal))
+            parts.append('</details>')
+        parts.append('</details>')
+    parts.append('</div>')
+    return summary, "".join(parts)
+
+
 # ═══════════════════════════ 构建应用 ═══════════════════════════
 def build_app():
     dws, dwe = _default_week()
@@ -528,7 +743,20 @@ def build_app():
             </div>
             """)
 
-        # ═══════════════ Tab 2: 历史任务 ═══════════════
+        # ═══════════════ Tab 2: 目标看板 ═══════════════
+        with gr.TabItem("🎯 目标看板") as goal_tab:
+            goal_summary_md = gr.Markdown("")
+            with gr.Accordion("➕ 新增目标", open=True):
+                with gr.Row():
+                    goal_proj_dd = gr.Dropdown(label="项目（必选）", choices=_active_proj_choices(), scale=2, interactive=True)
+                    goal_title_tb = gr.Textbox(label="目标名称", scale=3)
+                    goal_add_btn = gr.Button("添加", scale=1, variant="primary")
+                goal_note_tb = gr.Textbox(label="备注（可选，可记录卡点）", lines=2, max_lines=4)
+                goal_msg = gr.Markdown("")
+            goal_html = gr.HTML("")
+            gr.Markdown("💡 目标不受周时间约束，永久保留；状态只有「未开始 → 进行中 → 已完成」，需手动开始或结束。点击备注区域可随时编辑卡点。")
+
+        # ═══════════════ Tab 3: 历史任务 ═══════════════
         with gr.TabItem("📋 历史任务"):
             with gr.Row():
                 h_ws_tb = gr.Textbox(label="周起始", placeholder="2026-01-01", scale=2)
@@ -556,6 +784,7 @@ def build_app():
             with gr.Row():
                 del_proj_dd = gr.Dropdown(label="选择项目", choices=_proj_choices(), scale=3)
                 del_proj_btn = gr.Button("🗑 删除", scale=1, variant="stop")
+            gr.Markdown('<span style="font-size:11px;color:#999">删除项目会同时移除该项目下的任务、计划和目标，不可恢复（日常只需「标记完成」即可保留历史数据）。</span>')
             proj_msg = gr.Markdown("")
             gr.Markdown("### 默认设置")
             with gr.Row():
@@ -571,7 +800,7 @@ def build_app():
                 return "", "", "", gr.update(), gr.update()
             default_h = _default_total_hours()
             total_h = custom_h if custom_h is not None else default_h
-            pc = _proj_choices()
+            pc = _active_proj_choices()  # 已完成项目不出现在新增任务下拉中
             if active_tab == "current":
                 s = _s()
                 try:
@@ -590,6 +819,53 @@ def build_app():
 
         TREE_OUT = [tree_html, hours_md, warning_md, add_proj_dd, add_proj_dd]
         FULL_IN = [ws_state, we_state, pws_state, pwe_state, custom_h_state, tab_state]
+
+        # ── 目标看板刷新 ──
+        def refresh_goals(selected_proj=None):
+            summary, board = _render_goal_board()
+            pc = _active_proj_choices()
+            return summary, board, gr.update(choices=pc, value=selected_proj if selected_proj in pc else None)
+
+        GOAL_OUT = [goal_summary_md, goal_html, goal_proj_dd]
+
+        # ── 项目管理刷新（提前定义，供 JS 命令链复用）──
+        def _html_projects():
+            s = _s()
+            try: projects = list_projects(s)
+            finally: s.close()
+            if not projects: return '<div style="color:#888;padding:10px">暂无项目</div>'
+            rows = []
+            for p in projects:
+                if p.is_active:
+                    status_cell = '<span style="color:#2e7d32">🔄 进行中</span>'
+                    action = (f'<button onclick="setProjectStatus({p.id},\'completed\')" '
+                              f'style="background:none;border:1px solid #ddd;border-radius:3px;cursor:pointer;'
+                              f'font-size:11px;padding:1px 6px">标记完成</button>')
+                else:
+                    status_cell = '<span style="color:#888">✅ 已完成</span>'
+                    action = (f'<button onclick="setProjectStatus({p.id},\'active\')" '
+                              f'style="background:none;border:1px solid #ddd;border-radius:3px;cursor:pointer;'
+                              f'font-size:11px;padding:1px 6px">重新启用</button>')
+                rows.append(
+                    f'<tr><td style="padding:4px 8px">{_esc(p.name)}</td>'
+                    f'<td style="padding:4px 8px;font-size:12px">{status_cell}</td>'
+                    f'<td style="padding:4px 8px;text-align:right">{action}</td>'
+                    f'<td style="font-size:11px;color:#888;padding:4px 8px">{p.created_at.strftime("%Y-%m-%d")}</td></tr>'
+                )
+            return (
+                '<table width="100%" style="border-collapse:collapse"><tr style="background:#f5f5f5">'
+                '<th style="text-align:left;padding:4px 8px">名称</th>'
+                '<th style="text-align:left;padding:4px 8px;font-size:11px">状态</th>'
+                '<th style="text-align:left;padding:4px 8px;font-size:11px">操作</th>'
+                '<th style="text-align:left;padding:4px 8px;font-size:11px">创建时间</th>'
+                '</tr>' + "".join(rows) + '</table>'
+            )
+
+        def refresh_proj_ui():
+            pc = _proj_choices()
+            return (_html_projects(), gr.update(choices=pc, value=None), gr.update(choices=pc, value=None))
+
+        PROJ_OUT = [proj_table_html, rename_proj_dd, del_proj_dd]
 
         # ═══════════════ 事件绑定 ═══════════════
         def switch_to_current():
@@ -673,6 +949,7 @@ def build_app():
                     if payload["type"] == "project": update_project(s, payload["id"], payload["value"])
                     elif payload["type"] == "task": update_task(s, payload["id"], description=payload["value"])
                     elif payload["type"] == "plan": update_plan(s, payload["id"], description=payload["value"])
+                    elif payload["type"] == "goal": update_goal(s, payload["id"], title=payload["value"])
                 elif action == "edit_hours":
                     if payload["type"] == "task":
                         update_task(s, payload["id"], hours=validate_hours(float(payload["value"])))
@@ -686,6 +963,15 @@ def build_app():
                         task = get_task(s, pid)
                         if task:
                             if active_tab == "current": create_task(s, task.project_id, name, vh, ws_d, we_d, parent_id=pid)
+                # ── 目标看板 ──
+                elif action == "goal_start": start_goal(s, payload["id"])
+                elif action == "goal_finish": complete_goal(s, payload["id"])
+                elif action == "goal_undo": undo_complete_goal(s, payload["id"])
+                elif action == "goal_delete": delete_goal(s, payload["id"])
+                elif action == "goal_note": update_goal(s, payload["id"], note=payload.get("value", ""))
+                # ── 项目状态 ──
+                elif action == "project_status":
+                    update_project_status(s, payload["id"], payload["status"])
             except ValueError as e:
                 logger.warning(f"JS cmd 校验失败 ({action}): {e}")
                 return json.dumps({"error": str(e)})
@@ -695,7 +981,7 @@ def build_app():
             finally: s.close()
             return ""
 
-        js_trigger.click(handle_js_command, inputs=[js_cmd, ws_state, we_state, pws_state, pwe_state, custom_h_state, tab_state], outputs=[js_cmd]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT)
+        js_trigger.click(handle_js_command, inputs=[js_cmd, ws_state, we_state, pws_state, pwe_state, custom_h_state, tab_state], outputs=[js_cmd]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT).then(refresh_goals, inputs=[goal_proj_dd], outputs=GOAL_OUT).then(refresh_proj_ui, outputs=PROJ_OUT)
 
         # ── 全局新增任务 ──
         def handle_global_add(proj, name, hours, ws_d, we_d, pws_d, pwe_d, active_tab):
@@ -713,6 +999,25 @@ def build_app():
             except ValueError as e: return f"❌ {e}", "", None
             finally: s.close()
         add_btn.click(handle_global_add, inputs=[add_proj_dd, add_name_tb, add_hours_num, ws_state, we_state, pws_state, pwe_state, tab_state], outputs=[add_msg, add_name_tb, add_hours_num]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT)
+
+        # ── 目标看板新增 ──
+        def handle_add_goal(proj, title, note):
+            if not proj:
+                return "❌ 请选择项目（若无可选项目，请先在设置中创建或重新启用项目）", title or "", note or ""
+            pid = _proj_id(proj)
+            if not pid: return "❌ 项目不存在", title or "", note or ""
+            s = _s()
+            try:
+                create_goal(s, pid, title, note)
+                return "✅ 已添加", "", ""
+            except ValueError as e: return f"❌ {e}", title or "", note or ""
+            finally: s.close()
+        goal_add_btn.click(
+            handle_add_goal,
+            inputs=[goal_proj_dd, goal_title_tb, goal_note_tb],
+            outputs=[goal_msg, goal_title_tb, goal_note_tb],
+        ).then(refresh_goals, inputs=[goal_proj_dd], outputs=GOAL_OUT)
+        goal_tab.select(refresh_goals, inputs=[goal_proj_dd], outputs=GOAL_OUT)
 
         # ── 生成周报 ──
         def handle_report(ws_d, we_d):
@@ -847,17 +1152,6 @@ def build_app():
         )
 
         # ── 设置页面 ──
-        def refresh_proj_ui():
-            pc = _proj_choices()
-            return (_html_projects(), gr.update(choices=pc, value=None), gr.update(choices=pc, value=None))
-        def _html_projects():
-            s = _s()
-            try: projects = list_projects(s)
-            finally: s.close()
-            if not projects: return '<div style="color:#888;padding:10px">暂无项目</div>'
-            rows = [f'<tr><td>{p.name}</td><td style="font-size:11px;color:#888">{p.created_at.strftime("%Y-%m-%d")}</td></tr>' for p in projects]
-            return '<table width="100%" style="border-collapse:collapse"><tr style="background:#f5f5f5"><th style="text-align:left;padding:4px 8px">名称</th><th style="text-align:left;padding:4px 8px;font-size:11px">创建时间</th></tr>' + "".join(rows) + '</table>'
-
         def handle_create_project(name):
             if not name or not name.strip(): return ("❌ 名称不能为空", *refresh_proj_ui())
             s = _s()
@@ -865,7 +1159,7 @@ def build_app():
             except ValueError as e: msg = f"❌ {e}"
             finally: s.close()
             return (msg, *refresh_proj_ui())
-        create_proj_btn.click(handle_create_project, inputs=[new_proj_tb], outputs=[proj_msg, proj_table_html, rename_proj_dd, del_proj_dd]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT)
+        create_proj_btn.click(handle_create_project, inputs=[new_proj_tb], outputs=[proj_msg, proj_table_html, rename_proj_dd, del_proj_dd]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT).then(refresh_goals, inputs=[goal_proj_dd], outputs=GOAL_OUT)
 
         def handle_rename_project(old, new):
             if not old: return ("❌ 请选择项目", *refresh_proj_ui())
@@ -877,18 +1171,18 @@ def build_app():
             except ValueError as e: msg = f"❌ {e}"
             finally: s.close()
             return (msg, *refresh_proj_ui())
-        rename_proj_btn.click(handle_rename_project, inputs=[rename_proj_dd, rename_proj_tb], outputs=[proj_msg, proj_table_html, rename_proj_dd, del_proj_dd]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT)
+        rename_proj_btn.click(handle_rename_project, inputs=[rename_proj_dd, rename_proj_tb], outputs=[proj_msg, proj_table_html, rename_proj_dd, del_proj_dd]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT).then(refresh_goals, inputs=[goal_proj_dd], outputs=GOAL_OUT)
 
         def handle_delete_project(name):
             if not name: return ("❌ 请选择项目", *refresh_proj_ui())
             pid = _proj_id(name)
             if not pid: return ("❌ 项目不存在", *refresh_proj_ui())
             s = _s()
-            try: r = delete_project(s, pid); msg = f"✅ 已删除「{name}」（{r['tasks']} 任务, {r['plans']} 计划）"
+            try: r = delete_project(s, pid); msg = f"✅ 已删除「{name}」（{r['tasks']} 任务, {r['plans']} 计划, {r['goals']} 目标）"
             except ValueError as e: msg = f"❌ {e}"
             finally: s.close()
             return (msg, *refresh_proj_ui())
-        del_proj_btn.click(handle_delete_project, inputs=[del_proj_dd], outputs=[proj_msg, proj_table_html, rename_proj_dd, del_proj_dd]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT)
+        del_proj_btn.click(handle_delete_project, inputs=[del_proj_dd], outputs=[proj_msg, proj_table_html, rename_proj_dd, del_proj_dd]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT).then(refresh_goals, inputs=[goal_proj_dd], outputs=GOAL_OUT)
 
         def handle_save_settings(hours):
             s = _s()
@@ -901,6 +1195,7 @@ def build_app():
         save_set_btn.click(handle_save_settings, inputs=[default_h_num], outputs=[set_msg]).then(refresh_tree, inputs=FULL_IN, outputs=TREE_OUT)
 
         app.load(lambda: refresh_proj_ui(), outputs=[proj_table_html, rename_proj_dd, del_proj_dd])
+        app.load(refresh_goals, inputs=[goal_proj_dd], outputs=GOAL_OUT)
         app.load(lambda: refresh_tree(dws, dwe, dpws, dpwe, None, "current"), outputs=TREE_OUT)
 
     return app

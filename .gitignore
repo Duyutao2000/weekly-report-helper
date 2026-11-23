@@ -238,6 +238,8 @@ __marimo__/
 # ── 项目特定 ──
 data/*.db
 data/*.log
+data/backups/
 start.bat
 .playwright-mcp/
 AGENTS.md
+docs/改进方案20261118.md

@@ -1,22 +1,35 @@
 """
 数据模型定义 —— SQLAlchemy ORM
 
-包含五个表：
-  - projects: 项目
+包含六个表：
+  - projects: 项目（含进行中/已完成状态）
   - tasks: 任务（含软删除）
   - next_week_plans: 下周计划（目标周语义）
+  - goals: 目标看板事项（永久存在，不受周约束）
   - reports: 周报（含任务快照）
   - settings: 全局配置键值对
 """
 
+import logging
+import os
+import shutil
 from datetime import datetime
+from pathlib import Path
+
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean, Date, DateTime, Text,
     ForeignKey, CheckConstraint, UniqueConstraint, create_engine
 )
 from sqlalchemy.orm import declarative_base, relationship, Session
 
+logger = logging.getLogger(__name__)
+
 Base = declarative_base()
+
+# 项目状态常量
+PROJECT_ACTIVE = "active"
+PROJECT_COMPLETED = "completed"
+PROJECT_STATUSES = (PROJECT_ACTIVE, PROJECT_COMPLETED)
 
 
 # ──────────────────────────────────────────────
@@ -27,15 +40,25 @@ class Project(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False, unique=True, comment="项目名称（trim 后存储）")
+    status = Column(
+        String(20), nullable=False, default=PROJECT_ACTIVE, server_default=PROJECT_ACTIVE,
+        comment="项目状态：active（进行中）/ completed（已完成）"
+    )
     created_at = Column(DateTime, nullable=False, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now, comment="最后修改时间")
 
     # 关联
     tasks = relationship("Task", back_populates="project", lazy="dynamic")
     plans = relationship("NextWeekPlan", back_populates="project", lazy="dynamic")
+    goals = relationship("Goal", back_populates="project", lazy="dynamic")
+
+    @property
+    def is_active(self) -> bool:
+        """项目是否进行中（已完成项目不出现在新增任务/目标的项目下拉中）"""
+        return self.status != PROJECT_COMPLETED
 
     def __repr__(self):
-        return f"<Project(id={self.id}, name='{self.name}')>"
+        return f"<Project(id={self.id}, name='{self.name}', status='{self.status}')>"
 
 
 # ──────────────────────────────────────────────
@@ -99,7 +122,55 @@ class NextWeekPlan(Base):
 
 
 # ──────────────────────────────────────────────
-# 4. 周报表
+# 4. 目标看板表
+# ──────────────────────────────────────────────
+GOAL_NOT_STARTED = "not_started"
+GOAL_IN_PROGRESS = "in_progress"
+GOAL_COMPLETED = "completed"
+GOAL_STATUSES = (GOAL_NOT_STARTED, GOAL_IN_PROGRESS, GOAL_COMPLETED)
+
+
+class Goal(Base):
+    """
+    目标看板事项。
+
+    永久存在，不受周约束；状态只能手动流转：
+      not_started → in_progress → completed（可撤销回 in_progress）
+    """
+
+    __tablename__ = "goals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, comment="关联项目")
+    title = Column(Text, nullable=False, comment="目标名称")
+    note = Column(Text, nullable=True, comment="备注（可记录卡点等信息）")
+    status = Column(
+        String(20), nullable=False, default=GOAL_NOT_STARTED,
+        comment="目标状态：not_started / in_progress / completed"
+    )
+    started_at = Column(DateTime, nullable=True, comment="开始时间")
+    completed_at = Column(DateTime, nullable=True, comment="完成时间")
+    created_at = Column(DateTime, nullable=False, default=datetime.now, comment="创建时间")
+    updated_at = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now, comment="最后修改时间")
+
+    # 关联
+    project = relationship("Project", back_populates="goals")
+
+    @property
+    def status_label(self) -> str:
+        """状态的中文展示文本"""
+        return {
+            GOAL_NOT_STARTED: "未开始",
+            GOAL_IN_PROGRESS: "进行中",
+            GOAL_COMPLETED: "已完成",
+        }.get(self.status, self.status)
+
+    def __repr__(self):
+        return f"<Goal(id={self.id}, project_id={self.project_id}, status='{self.status}')>"
+
+
+# ──────────────────────────────────────────────
+# 5. 周报表
 # ──────────────────────────────────────────────
 class Report(Base):
     __tablename__ = "reports"
@@ -116,7 +187,7 @@ class Report(Base):
 
 
 # ──────────────────────────────────────────────
-# 5. 设置表（键值对）
+# 6. 设置表（键值对）
 # ──────────────────────────────────────────────
 class Setting(Base):
     __tablename__ = "settings"
@@ -133,6 +204,9 @@ class Setting(Base):
 # 数据库初始化
 # ──────────────────────────────────────────────
 DATABASE_URL = "sqlite:///data/todo.db"
+DB_PATH = Path("data/todo.db")
+BACKUP_DIR = Path("data/backups")
+BACKUP_KEEP = 10  # 自动备份保留最近 N 份
 
 _engine = None
 
@@ -145,19 +219,94 @@ def get_engine():
     return _engine
 
 
+def _sqlite_has_table(engine, table: str) -> bool:
+    """SQLite：判断表是否存在"""
+    with engine.connect() as conn:
+        row = conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name = ?", (table,)
+        ).first()
+    return row is not None
+
+
+def _sqlite_has_column(engine, table: str, column: str) -> bool:
+    """SQLite：判断列是否存在"""
+    with engine.connect() as conn:
+        rows = conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()
+    return any(r[1] == column for r in rows)
+
+
+def _needs_migration(engine) -> bool:
+    """
+    判断旧库是否需要结构升级：
+      - projects 表缺少 status 列（项目状态功能）
+      - goals 表不存在（目标看板）
+    """
+    if not _sqlite_has_table(engine, "projects"):
+        return False  # 全新的空库，create_all 会建全
+    return (
+        not _sqlite_has_column(engine, "projects", "status")
+        or not _sqlite_has_table(engine, "goals")
+    )
+
+
+def backup_db(reason: str = "manual") -> Path | None:
+    """
+    备份当前数据库到 data/backups/，并只保留最近 BACKUP_KEEP 份。
+
+    参数:
+        reason: 备份原因（写入日志）
+
+    返回:
+        备份文件路径；数据库不存在时返回 None
+    """
+    if not DB_PATH.exists():
+        return None
+
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    dst = BACKUP_DIR / f"todo-{datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
+    shutil.copy2(DB_PATH, dst)
+    logger.info(f"数据库已备份（{reason}）：{dst}")
+
+    backups = sorted(BACKUP_DIR.glob("todo-*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in backups[BACKUP_KEEP:]:
+        try:
+            old.unlink()
+        except OSError as e:
+            logger.warning(f"清理旧备份失败 {old}: {e}")
+    return dst
+
+
+def _migrate_schema(engine):
+    """
+    SQLite 增量迁移（幂等）：
+      - projects.status：旧库补列，默认 active，历史项目视为进行中
+    """
+    if _sqlite_has_table(engine, "projects") and not _sqlite_has_column(engine, "projects", "status"):
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "ALTER TABLE projects ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'active'"
+            )
+        logger.info("迁移完成：projects.status 列已添加（历史项目默认 active）")
+
+
 def init_db():
     """
-    初始化数据库：建表 + 写入默认配置。
+    初始化数据库：建表 + 增量迁移 + 写入默认配置。
 
-    每次应用启动时调用，幂等（CREATE TABLE IF NOT EXISTS）。
+    每次应用启动时调用，幂等。
+    若检测到需要结构升级，会先把旧库备份到 data/backups/，避免历史数据丢失。
     """
-    import os
-
     # 确保 data 目录存在
     os.makedirs("data", exist_ok=True)
 
     engine = get_engine()
+
+    # 结构变更前先备份（仅旧库需要升级时触发，正常启动不产生冗余备份）
+    if _needs_migration(engine):
+        backup_db("升级表结构前自动备份")
+
     Base.metadata.create_all(engine)
+    _migrate_schema(engine)
 
     # 写入默认配置（仅当 settings 表为空时）
     with Session(engine) as session:

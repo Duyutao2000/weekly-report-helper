@@ -1,26 +1,32 @@
 """
 项目 CRUD 服务
 
-提供项目的增删改查操作，按创建时间升序排列。
+提供项目的增删改查、状态切换（进行中/已完成），按创建时间升序排列。
+已完成项目不会出现在「新增任务 / 新增目标」的项目下拉中。
 """
 
 from datetime import datetime
 from sqlalchemy.orm import Session
-from core.models import Project, Task, NextWeekPlan
+from core.models import (
+    Project, Task, NextWeekPlan, Goal,
+    PROJECT_ACTIVE, PROJECT_COMPLETED, PROJECT_STATUSES,
+)
 
 
-def list_projects(session: Session) -> list[Project]:
+def list_projects(session: Session, active_only: bool = False) -> list[Project]:
     """
     获取所有项目，按创建时间升序。
+
+    参数:
+        active_only: 只返回进行中项目（用于新增任务/目标的项目下拉）
 
     返回:
         Project 对象列表（最早创建的在前）
     """
-    return (
-        session.query(Project)
-        .order_by(Project.created_at.asc())
-        .all()
-    )
+    q = session.query(Project)
+    if active_only:
+        q = q.filter(Project.status != PROJECT_COMPLETED)
+    return q.order_by(Project.created_at.asc()).all()
 
 
 def get_project(session: Session, project_id: int) -> Project | None:
@@ -113,6 +119,46 @@ def update_project(session: Session, project_id: int, name: str) -> Project:
     return project
 
 
+def update_project_status(session: Session, project_id: int, status: str) -> Project:
+    """
+    切换项目状态（进行中 / 已完成）。
+
+    已完成项目不再出现在「新增任务 / 新增目标」的项目下拉中，
+    但项目下的历史任务、计划、目标数据全部保留。
+
+    参数:
+        project_id: 项目 ID
+        status: active（进行中）或 completed（已完成）
+
+    返回:
+        更新后的 Project 对象
+
+    异常:
+        ValueError: 项目不存在、状态值非法
+    """
+    if status not in PROJECT_STATUSES:
+        raise ValueError(f"未知的项目状态：{status}")
+
+    project = get_project(session, project_id)
+    if not project:
+        raise ValueError("项目不存在")
+
+    project.status = status
+    project.updated_at = datetime.now()
+    session.commit()
+    return project
+
+
+def complete_project(session: Session, project_id: int) -> Project:
+    """把项目标记为已完成（保留全部历史数据）"""
+    return update_project_status(session, project_id, PROJECT_COMPLETED)
+
+
+def reopen_project(session: Session, project_id: int) -> Project:
+    """把项目重新标记为进行中"""
+    return update_project_status(session, project_id, PROJECT_ACTIVE)
+
+
 def delete_project(session: Session, project_id: int) -> dict:
     """
     删除项目，同时删除该项目下所有关联数据。
@@ -121,9 +167,10 @@ def delete_project(session: Session, project_id: int) -> dict:
         project_id: 项目 ID
 
     返回:
-        {"deleted": bool, "tasks": int, "plans": int}
+        {"deleted": bool, "tasks": int, "plans": int, "goals": int}
         - tasks: 被删除的任务数
         - plans: 被删除的计划数
+        - goals: 被删除的目标数
 
     异常:
         ValueError: 项目不存在
@@ -143,7 +190,14 @@ def delete_project(session: Session, project_id: int) -> dict:
         .filter(NextWeekPlan.project_id == project_id)
         .count()
     )
+    goal_count = (
+        session.query(Goal)
+        .filter(Goal.project_id == project_id)
+        .count()
+    )
 
+    # 删除关联的目标（硬删除）
+    session.query(Goal).filter(Goal.project_id == project_id).delete()
     # 删除关联的计划（硬删除）
     session.query(NextWeekPlan).filter(NextWeekPlan.project_id == project_id).delete()
     # 删除关联的任务（硬删除，跳过软删除标记）
@@ -152,4 +206,4 @@ def delete_project(session: Session, project_id: int) -> dict:
     session.delete(project)
     session.commit()
 
-    return {"deleted": True, "tasks": task_count, "plans": plan_count}
+    return {"deleted": True, "tasks": task_count, "plans": plan_count, "goals": goal_count}
